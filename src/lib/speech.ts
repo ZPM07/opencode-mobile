@@ -1,5 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from "react"
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from "expo-speech-recognition"
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  type RecordingOptions,
+} from "expo-audio"
+import * as FileSystem from "expo-file-system"
+import { useConnections } from "../stores/connections"
 
 interface SpeechState {
   listening: boolean
@@ -13,11 +22,24 @@ interface SpeechActions {
   cancel: () => void
 }
 
+// 16 kHz mono keeps uploads small; the STT bridge resamples anyway, but
+// recording at the target rate avoids a lossy double conversion.
+const VOICE_OPTIONS: RecordingOptions = {
+  ...RecordingPresets.HIGH_QUALITY,
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 32000,
+}
+
 export function useSpeech(onResult: (text: string) => void): SpeechState & SpeechActions {
   const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState("")
   const [error, setError] = useState<string | null>(null)
   const pending = useRef("")
+  const recorder = useAudioRecorder(VOICE_OPTIONS)
+  // cancel() stops the recording but must not deliver its transcript.
+  const discard = useRef(false)
+  const useFallback = useRef(false)
 
   useSpeechRecognitionEvent("start", () => {
     setListening(true)
@@ -61,7 +83,7 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
       if (typeof ExpoSpeechRecognitionModule.isRecognitionAvailable === "function") {
         const available = await ExpoSpeechRecognitionModule.isRecognitionAvailable()
         if (!available) {
-          setError("Speech recognition is not available on this device")
+          await startFallback()
           return
         }
       }
@@ -78,18 +100,30 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [])
+  }, [startFallback])
 
   const stop = useCallback(() => {
+    if (useFallback.current) {
+      void stopFallback()
+      return
+    }
     ExpoSpeechRecognitionModule.stop()
-  }, [])
+  }, [stopFallback])
 
   const cancel = useCallback(() => {
     pending.current = ""
+    if (useFallback.current) {
+      discard.current = true
+      void recorder.stop()
+      void setAudioModeAsync({ allowsRecording: false })
+      setListening(false)
+      setTranscript("")
+      return
+    }
     ExpoSpeechRecognitionModule.abort()
     setListening(false)
     setTranscript("")
-  }, [])
+  }, [recorder])
 
   // Stop the native recognition session when the screen unmounts — otherwise
   // the mic stays hot in the background. abort() is a no-op when not listening.
@@ -99,5 +133,85 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
     }
   }, [])
 
+  // --- Fallback for devices without a system speech recognizer (e.g. Huawei
+  // without Google services): record with expo-audio and send the file to the
+  // opencode voice-stt bridge, which transcribes via local Handy/GigaAM.
+
+  async function startFallback() {
+    const base = useConnections.getState().clientBase
+    if (!base) {
+      setError("Speech recognition is not available on this device")
+      return
+    }
+    const permission = await AudioModule.requestRecordingPermissionsAsync()
+    if (!permission.granted) {
+      setError("Microphone permission denied")
+      return
+    }
+    useFallback.current = true
+    discard.current = false
+    setError(null)
+    setTranscript("")
+    pending.current = ""
+    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true })
+    await recorder.prepareToRecordAsync()
+    recorder.record()
+    setListening(true)
+  }
+
+  async function stopFallback() {
+    const discardThis = discard.current
+    discard.current = false
+    try {
+      await recorder.stop()
+    } finally {
+      useFallback.current = false
+      void setAudioModeAsync({ allowsRecording: false })
+      setListening(false)
+      setTranscript("")
+    }
+    const uri = recorder.uri
+    if (discardThis || !uri) return
+    const base = useConnections.getState().clientBase
+    if (!base) {
+      setError("Speech recognition is not available on this device")
+      return
+    }
+    // Justified try/catch: network/server failures here must degrade to the
+    // shared error alert instead of crashing the session screen.
+    try {
+      const text = await transcribeOnServer(uri, base)
+      if (text.trim()) onResult(text.trim())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   return { listening, transcript, error, start, stop, cancel }
+}
+
+interface SttBase {
+  baseUrl: string
+  auth?: { username: string; password: string }
+}
+
+// The voice-stt plugin listens on port 4097 on the same host as the opencode
+// server and accepts the same Basic credentials.
+async function transcribeOnServer(uri: string, base: SttBase): Promise<string> {
+  const url = new URL(base.baseUrl)
+  url.port = "4097"
+  const headers: Record<string, string> = {}
+  if (base.auth) {
+    headers.Authorization = `Basic ${btoa(`${base.auth.username}:${base.auth.password}`)}`
+  }
+  const res = await FileSystem.uploadAsync(`${url.origin}/transcribe`, uri, {
+    httpMethod: "POST",
+    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+    headers,
+  })
+  const data = JSON.parse(res.body) as { text?: string; error?: string }
+  if (res.status !== 200) {
+    throw new Error(data.error || `Voice server error ${res.status}`)
+  }
+  return data.text ?? ""
 }
