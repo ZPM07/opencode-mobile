@@ -171,6 +171,7 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
       setTranscript("")
     }
     const uri = recorder.uri
+    console.log(`[voice] recorded uri: ${uri}`)
     if (discardThis || !uri) return
     const base = useConnections.getState().clientBase
     if (!base) {
@@ -181,8 +182,10 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
     // shared error alert instead of crashing the session screen.
     try {
       const text = await transcribeOnServer(uri, base)
+      console.log(`[voice] transcribed: ${text.slice(0, 80)}`)
       if (text.trim()) onResult(text.trim())
     } catch (err) {
+      console.warn("[voice] failed:", err)
       setError(err instanceof Error ? err.message : String(err))
     }
   }
@@ -196,19 +199,27 @@ interface SttBase {
 }
 
 // The voice-stt plugin listens on port 4097 on the same host as the opencode
-// server and accepts the same Basic credentials.
+// server and accepts the same Basic credentials. Built with string ops —
+// Hermes `new URL` support must not be assumed here.
+function sttEndpoint(baseUrl: string): string {
+  const m = baseUrl.match(/^(https?:\/\/)([^/:?#]+)(?::(\d+))?(?:\/.*)?$/)
+  if (!m) return `${baseUrl.replace(/\/+$/, "")}/transcribe`
+  return `${m[1]}${m[2]}:4097/transcribe`
+}
+
 async function transcribeOnServer(uri: string, base: SttBase): Promise<string> {
-  const url = new URL(base.baseUrl)
-  url.port = "4097"
+  const endpoint = sttEndpoint(base.baseUrl)
   const headers: Record<string, string> = {}
   if (base.auth) {
     headers.Authorization = `Basic ${btoa(`${base.auth.username}:${base.auth.password}`)}`
   }
-  const res = await FileSystem.uploadAsync(`${url.origin}/transcribe`, uri, {
+  console.log(`[voice] uploading ${uri} -> ${endpoint}`)
+  const res = await FileSystem.uploadAsync(endpoint, uri, {
     httpMethod: "POST",
     uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
     headers,
   })
+  console.log(`[voice] status ${res.status} body: ${res.body.slice(0, 200)}`)
   const data = JSON.parse(res.body) as { text?: string; error?: string }
   if (res.status !== 200) {
     throw new Error(data.error || `Voice server error ${res.status}`)

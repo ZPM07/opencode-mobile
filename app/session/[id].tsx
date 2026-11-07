@@ -155,7 +155,7 @@ export default function SessionScreen() {
   // on every re-render while it remains set.
   useEffect(() => {
     if (!speech.error) return
-    Alert.alert(t("session.alerts.speechErrorTitle"), t("session.alerts.speechErrorMessage"))
+    Alert.alert(t("session.alerts.speechErrorTitle"), `${t("session.alerts.speechErrorMessage")}\n\n${speech.error}`)
   }, [speech.error, t])
 
   // Slash command state
