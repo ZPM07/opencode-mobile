@@ -7,7 +7,8 @@ import {
   useAudioRecorder,
   type RecordingOptions,
 } from "expo-audio"
-import * as FileSystem from "expo-file-system"
+// expo-file-system v19 (SDK 54) moved the classic uploadAsync API to /legacy.
+import * as FileSystem from "expo-file-system/legacy"
 import { useConnections } from "../stores/connections"
 
 interface SpeechState {
