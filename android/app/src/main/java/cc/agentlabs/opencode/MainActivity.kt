@@ -21,16 +21,19 @@ class MainActivity : ReactActivity() {
     setTheme(R.style.AppTheme);
     super.onCreate(null)
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-      val root = findViewById<View>(android.R.id.content)
-      val bottom = root.paddingBottom
-      // Android 15+ no longer resizes edge-to-edge windows for the IME.
-      ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-        view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, bottom + insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
-        insets
-      }
-      ViewCompat.requestApplyInsets(root)
+    val root = findViewById<View>(android.R.id.content)
+    val bottom = root.paddingBottom
+    // Expo SDK 54 apps are edge-to-edge on every Android version, so the IME
+    // no longer resizes the window (adjustResize is a no-op). Pad the content
+    // view with the IME inset on ALL API levels, not just 35+: on older
+    // devices (e.g. Android 10) the keyboard otherwise covers the composer.
+    // Inset is 0 whenever the window is already resized, so this stays safe
+    // on configurations where the window does resize.
+    ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+      view.setPadding(view.paddingLeft, view.paddingTop, view.paddingRight, bottom + insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+      insets
     }
+    ViewCompat.requestApplyInsets(root)
   }
 
   /**

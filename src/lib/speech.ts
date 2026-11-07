@@ -53,16 +53,31 @@ export function useSpeech(onResult: (text: string) => void): SpeechState & Speec
   })
 
   const start = useCallback(async () => {
-    const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync()
-    if (!result.granted) {
-      setError("Microphone permission denied")
-      return
+    // Justified try/catch: on devices without a speech-recognizer service
+    // (several Android 10-12 ROMs) a bare start() call throws natively and
+    // kills the app. Surface it through the same error alert as other failures.
+    try {
+      // Feature-detected: availability check is Android-only in the module.
+      if (typeof ExpoSpeechRecognitionModule.isRecognitionAvailable === "function") {
+        const available = await ExpoSpeechRecognitionModule.isRecognitionAvailable()
+        if (!available) {
+          setError("Speech recognition is not available on this device")
+          return
+        }
+      }
+      const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync()
+      if (!result.granted) {
+        setError("Microphone permission denied")
+        return
+      }
+      ExpoSpeechRecognitionModule.start({
+        lang: "en-US",
+        interimResults: true,
+        continuous: true,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
     }
-    ExpoSpeechRecognitionModule.start({
-      lang: "en-US",
-      interimResults: true,
-      continuous: true,
-    })
   }, [])
 
   const stop = useCallback(() => {
